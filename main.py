@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import configparser
 import re
+import sys
 from datetime import date
 from cabecera import crea_cabecera
 
@@ -63,8 +64,8 @@ def tiempo_a_segundos(t_str):
     h, m, s = map(int, t_str.split(':'))
     return h * 3600 + m * 60 + s
 
-def busca_slot(slot_num):
-    minuto_comienzo = slot_num * 3
+def busca_slot(hora,slot_num):
+    minuto_comienzo = (hora%2)*60 + slot_num * 3
     patron = re.compile(r'^Lab [A-Z0-9]{1,6}$')
     for seccion in config.sections():
         if patron.match(seccion):
@@ -73,13 +74,6 @@ def busca_slot(slot_num):
                 return seccion
     return None
 
-def busca_local():
-    patron = re.compile(r'^Lab [A-Z0-9]{1,6}$')
-    for seccion in config.sections():
-        if patron.match(seccion):
-            if config[seccion].getboolean('local') == True:
-                return seccion
-    return None
 
 def fecha_a_mjd(fecha_str: str) -> int:
     try:
@@ -110,21 +104,92 @@ def abre_ambientales(fecha_str):
     if len(campos) != 3:
         return None
     archivo = f"./datos/{campos[2]}{meses[campos[1]]}{campos[0][2:]}.ema"
-    df = pd.read_csv(archivo, sep=' ', header=None)
+    try:
+        df = pd.read_csv(archivo, sep=' ', header=None)
+    except FileNotFoundError:
+        print(f"Archivo no encontrado: {archivo}")
+        return None
     return df
 
 def recupera_ambientales(df_amb, minuto):
-#    print(f"Recuperando datos ambientales del minuto {minuto}")
+    if df_amb is None:
+        return 99, 99, 9999
     anteriores = df_amb[df_amb.iloc[:, 0] <= minuto]
     if anteriores.empty:
         print("No se encontraron datos ambientales anteriores al minuto solicitado.")
-        return None, None, None
+        return 99, 99, 9999
     fila = anteriores.iloc[-1]      # obtenemos la última fila válida
     temperatura = round(float(fila[1]))
     humedad = int(fila[2])
     presion = round(float(fila[7]))
 
     return temperatura, humedad, presion
+
+def interpolar_datos(df, hora, minuto):
+    """
+    Interpola temperatura, humedad y presión desde un DataFrame con 9 columnas (sin cabecera),
+    donde los datos están cada 10 minutos.
+
+    Parámetros:
+    - df: pandas.DataFrame con 9 columnas (índices 0 a 8)
+    - hora: int (0-23)
+    - minuto: int (0-59)
+
+    Retorna:
+    - (temperatura, humedad, presion): tupla de floats interpolados
+    """
+    minuto_dia = hora * 60 + minuto
+
+    # Seleccionar las columnas de interés
+    minutos = df[0].to_numpy()      # columna 0: minuto
+    temps = df[1].to_numpy()        # columna 1: temperatura
+    hums = df[2].to_numpy()         # columna 2: humedad
+    presiones = df[7].to_numpy()    # columna 7: presión
+
+    # Ordenar por minuto (por si acaso)
+    orden = minutos.argsort()
+    minutos = minutos[orden]
+    temps = temps[orden]
+    hums = hums[orden]
+    presiones = presiones[orden]
+
+    # Casos extremos
+    if minuto_dia <= minutos[0]:
+        return temps[0], hums[0], presiones[0]
+    if minuto_dia >= minutos[-1]:
+        return temps[-1], hums[-1], presiones[-1]
+
+    # Interpolación lineal
+    for i in range(len(minutos) - 1):
+        m1, m2 = minutos[i], minutos[i+1]
+        if m1 <= minuto_dia <= m2:
+            factor = (minuto_dia - m1) / (m2 - m1)
+            temp_interp = temps[i] + factor * (temps[i+1] - temps[i])
+            hum_interp = hums[i] + factor * (hums[i+1] - hums[i])
+            pres_interp = presiones[i] + factor * (presiones[i+1] - presiones[i])
+            return int(round(temp_interp)), int(round(hum_interp)), int(round(pres_interp))
+
+    raise ValueError("No se pudo interpolar el minuto especificado")
+
+
+def obtener_nombre_fichero():
+    """
+    Lee el argumento '-f <nombre-fichero>' de la línea de comandos.
+    
+    Returns:
+        str: El nombre del fichero especificado con -f, o un nombre generado
+             con la fecha actual en formato 'raw.YYYYMMDD' si no se encuentra -f.
+    """
+    args = sys.argv
+    # Buscar la opción -f
+    for i, arg in enumerate(args):
+        if arg == '-f' and i + 1 < len(args):
+            return args[i + 1]   # devuelve el nombre del fichero
+    # Si no se encuentra, usar fecha actual
+    fecha_actual = date.today().strftime("%Y%m%d")
+    return f"raw.{fecha_actual}"
+
+
 
 
 def calcula_atl(df: pd.DataFrame) -> float:
@@ -157,11 +222,13 @@ def calcula_atl(df: pd.DataFrame) -> float:
     diff_seconds = (last - first).total_seconds()
     return diff_seconds
 
+fichero=obtener_nombre_fichero()
+
+
 config = configparser.ConfigParser()
 config.read('twstft.ini')
 
-
-with open("./datos/raw.20260411", "r") as f:
+with open(f"./datos/{fichero}", "r") as f:
     filas = []
     for linea in f:
         if ">" in linea:
@@ -178,17 +245,17 @@ df = pd.DataFrame(filas)
 df_amb=abre_ambientales(df.iloc[0, 0])
 djm = fecha_a_mjd(df.iloc[0, 0])  # fecha en la primera columna
 nombre_archivo_itu = f"twroa{djm//1000}.{djm%1000}"
-crea_cabecera(config,nombre_archivo_itu)
+contenido=crea_cabecera(config,nombre_archivo_itu)
 pd.set_option('display.max_rows', None)
-for hora in range(0,24,2):
+for hora in range(0,24):
     for slot in range(20):
         valores_slot, comienzo = filas_slot(df, hora, slot)
         if valores_slot.empty:
 #            print(f"Slot {slot}: No se encontraron datos válidos.")
             continue
-        datos_slot = busca_slot(slot)
+        datos_slot = busca_slot(hora,slot)
         if datos_slot is None:
-            print(f"Slot {slot}: No se encontró sección correspondiente en el archivo .ini.")
+            print(f"Hora: {hora}, Slot {slot}: No se encontró sección correspondiente en el archivo .ini.")
             continue
 #        guardar_como_texto_legible(valores_slot, f"valores_slot_{slot}.txt")
 
@@ -208,11 +275,17 @@ for hora in range(0,24,2):
         y_float = y_float[mask_valid].values
 
         v,y_std, n_puntos = calcula_datos(x_segundos, y_float)
+        if n_puntos < 50:
+            continue  # Si hay menos de 50 puntos válidos, saltar este slot
 #        djm = fecha_a_mjd(df_120.iloc[0, 0])  # fecha en la primera columna
 # 5. Resultados
 # Divido la linea de salida por comodidad, para que sea más fácil de leer y modificar en el futuro
         atl=calcula_atl(df_120)
-        lab_local=busca_local()
+        if hora % 2 == 0:
+            lab_local=f"Lab {config['Local']['par']}"
+        else:
+            lab_local=f"Lab {config['Local']['impar']}"
+
         if float(config[datos_slot]['calr']) > 999999990:
             calr=str(999999999)
         else:
@@ -226,14 +299,18 @@ for hora in range(0,24,2):
         else:
             esig=f"{float(config[lab_local]['esig']):>5.3f}"
 
-        temperatura, humedad, presion = recupera_ambientales(df_amb,int(comienzo[0:2])*60 + int(comienzo[2:4]))
-
+ #       temperatura, humedad, presion = recupera_ambientales(df_amb,int(comienzo[0:2])*60 + int(comienzo[2:4]))
+        temperatura, humedad, presion = interpolar_datos(df_amb, int(comienzo[0:2]), int(comienzo[2:4]))       
         linea_salida = f"{config[lab_local]['nombre']:>6} {config[datos_slot]['nombre']:>6} {int(config[datos_slot]['link']):2d} {djm} {comienzo} "
         linea_salida += f"{int(config['itu']['ntl']):3d} {v/1e9:+.12f} {y_std:.3f} {n_puntos:03d} {int(atl):03d} "
         linea_salida += f"{float(config[lab_local]['refdelay']):+.12f} {float(config[lab_local]['rsig']):.3f} "
         linea_salida += f"{int(config[datos_slot]['ci']):3d} {int(config[datos_slot]['sw']):1d} {calr} {esdvar} {esig}"
-        linea_salida += f" {int(temperatura):3d} {int(humedad):3d} {int(presion):2d}"
+        linea_salida += f" {int(temperatura):3d} {int(humedad):3d} {int(presion):4d}"
 
-        print(linea_salida)
+        contenido += linea_salida + "\n"
+#        print(contenido)
 
+        with open(f"./salida/{nombre_archivo_itu}", "w") as f_out:
+            f_out.write(contenido)
+        
 
