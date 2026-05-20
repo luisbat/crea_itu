@@ -1,1 +1,6 @@
 datos/*
+*.m
+.vscode/*
+__pycache__/*
+salida/*
+__pycache__/cabecera.cpython-313.pyc

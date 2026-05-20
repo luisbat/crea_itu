@@ -140,36 +140,43 @@ def interpolar_datos(df, hora, minuto):
     """
     minuto_dia = hora * 60 + minuto
 
-    # Seleccionar las columnas de interés
-    minutos = df[0].to_numpy()      # columna 0: minuto
-    temps = df[1].to_numpy()        # columna 1: temperatura
-    hums = df[2].to_numpy()         # columna 2: humedad
-    presiones = df[7].to_numpy()    # columna 7: presión
+    linea_base = minuto_dia // 10 * 10
 
-    # Ordenar por minuto (por si acaso)
-    orden = minutos.argsort()
-    minutos = minutos[orden]
-    temps = temps[orden]
-    hums = hums[orden]
-    presiones = presiones[orden]
+    # Buscar el índice del valor (si existe)
+    try:
+        indice = df.index[df.iloc[:, 0] == linea_base].item()
+        print(f"El valor {linea_base} ({hora:02d}:{minuto:02d}) está en el índice {indice}: {df.iloc[indice].values}")
+        temperatura_baja = float(df.iloc[indice, 1])
+        temperatura_alta = float(df.iloc[indice + 1, 1])
+        temperatura = temperatura_baja + (temperatura_alta - temperatura_baja) * (minuto_dia - linea_base) / 10
+        humedad_baja = int(df.iloc[indice, 2])
+        humedad_alta = int(df.iloc[indice + 1, 2])
+        humedad = humedad_baja + (humedad_alta - humedad_baja) * (minuto_dia - linea_base) / 10
+        presion_baja = float(df.iloc[indice, 7])
+        presion_alta = float(df.iloc[indice + 1, 7])
+        presion = presion_baja + (presion_alta - presion_baja) * (minuto_dia - linea_base) / 10
+    except ValueError:
+        print(f"El valor {linea_base} no se encontró en la columna 0")
+        return 99, 99, 9999
+    return round(temperatura), round(humedad), round(presion)
 
-    # Casos extremos
-    if minuto_dia <= minutos[0]:
-        return temps[0], hums[0], presiones[0]
-    if minuto_dia >= minutos[-1]:
-        return temps[-1], hums[-1], presiones[-1]
+    # # Casos extremos
+    # if minuto_dia <= minutos[0]:
+    #     return temps[0], hums[0], presiones[0]
+    # if minuto_dia >= minutos[-1]:
+    #     return temps[-1], hums[-1], presiones[-1]
 
-    # Interpolación lineal
-    for i in range(len(minutos) - 1):
-        m1, m2 = minutos[i], minutos[i+1]
-        if m1 <= minuto_dia <= m2:
-            factor = (minuto_dia - m1) / (m2 - m1)
-            temp_interp = temps[i] + factor * (temps[i+1] - temps[i])
-            hum_interp = hums[i] + factor * (hums[i+1] - hums[i])
-            pres_interp = presiones[i] + factor * (presiones[i+1] - presiones[i])
-            return int(round(temp_interp)), int(round(hum_interp)), int(round(pres_interp))
+    # # Interpolación lineal
+    # for i in range(len(minutos) - 1):
+    #     m1, m2 = minutos[i], minutos[i+1]
+    #     if m1 <= minuto_dia <= m2:
+    #         factor = (minuto_dia - m1) / (m2 - m1)
+    #         temp_interp = temps[i] + factor * (temps[i+1] - temps[i])
+    #         hum_interp = hums[i] + factor * (hums[i+1] - hums[i])
+    #         pres_interp = presiones[i] + factor * (presiones[i+1] - presiones[i])
+    #         return int(round(temp_interp)), int(round(hum_interp)), int(round(pres_interp))
 
-    raise ValueError("No se pudo interpolar el minuto especificado")
+    # raise ValueError("No se pudo interpolar el minuto especificado")
 
 
 def obtener_nombre_fichero():
